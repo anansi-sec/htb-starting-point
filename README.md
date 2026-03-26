@@ -434,11 +434,6 @@ curl -b cookies.txt http://10.129.55.198/dashboard/ -s
 **Machine Completed** ✅
 
 *Last Updated: March 26, 2026*
-```
-
-This markdown block is now complete with all bash commands properly closed using triple backticks and ready to copy and paste directly into your `README.md` file.
-
-
 
 ---
 
