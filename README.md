@@ -1,3 +1,22 @@
+# HTB Starting Point — Progress Tracker
+
+| Machine | Tier | Services | Date Completed | Write-Up |
+|---------|------|----------|----------------|----------|
+| **Sequel** | 1 | MySQL/MariaDB (3306) | 2026-03-25 | [↓ Jump to Sequel](#htb-starting-point-sequel-mysqlmariadb) |
+| **Crocodile** | 1 | FTP (21), HTTP (80) | 2026-03-26 | [↓ Jump to Crocodile](#htb-starting-point-crocodile-ftp--web) |
+| **Responder** | 1 | — | — | — |
+| **Three** | 1 | — | — | — |
+
+---
+
+> **Tier 1 Progress:** 2/4 machines completed (50%)  
+> **Next:** Responder → Three  
+> **Last Updated:** March 26, 2026
+
+---
+
+<!-- Your existing Crocodile write-up starts here -->
+
 # HTB Starting Point: Crocodile (FTP + Web)
 
 ## Machine Info
