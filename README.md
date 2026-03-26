@@ -5,7 +5,7 @@
 | **Machine Info** | |
 |------------------|-|
 | **Name** | Sequel |
-| **Difficulty** | Starting Point (Tier 0) |
+| **Difficulty** | Starting Point (Tier 1) |
 | **Service** | MySQL / MariaDB |
 | **Port** | 3306 |
 | **Date Completed** | 2026-03-25 |
