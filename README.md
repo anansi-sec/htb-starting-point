@@ -25,6 +25,21 @@
 
 ---
 
+## 💻 Environment Setup
+
+To ensure reproducibility and consistent results, the following environment was used for this engagement:
+
+| **Component** | **Specification** |
+| :--- | :--- |
+| **Attack Machine** | Kali Linux (2024.x) / Parrot Security OS |
+| **Hypervisor** | VMware Workstation / Oracle VirtualBox |
+| **Connectivity** | OpenVPN (HTB Lab Configuration) |
+| **Tools Used** | Nmap, MySQL-Client, Netcat (nc) |
+
+> **Note:** Ensure your HTB VPN is active and you can `ping` the target IP before beginning enumeration.
+
+---
+
 ## 🔍 Reconnaissance
 
 ### Port Scan
@@ -164,13 +179,13 @@ SELECT * FROM config;
 +----+------+--------------------------+
 | id | name | value                    |
 +----+------+--------------------------+
-|  1 | flag | HTB{example_flag_here}   |
+|  1 | flag | HTB{REDACTED}   |
 +----+------+--------------------------+
 ```
 
 ### 🎯 Flag Found!
 ```
-HTB{example_flag_here}
+HTB{REDACTED}
 ```
 
 ---
