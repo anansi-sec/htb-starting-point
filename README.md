@@ -438,8 +438,6 @@ curl -b cookies.txt http://10.129.55.198/dashboard/ -s
 ---
 
 # HTB Starting Point: Sequel (MySQL/MariaDB)
-
-<div align="center">
   
 | **Machine Info** | |
 |------------------|-|
