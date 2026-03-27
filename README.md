@@ -15,7 +15,7 @@
 
 ---
 
-# HTB Starting Point: Unika (LFI → Hash Capture → WinRM)
+# HTB Starting Point: Responder (LFI → Hash Capture → WinRM)
 
 | **Machine Info** | |
 |------------------|-|
