@@ -1,4 +1,4 @@
-# HTB Starting Point — Progress Tracker
+#![Hack The Box](https://img.shields.io/badge/-Hack%20The%20Box-9FEF00?style=for-the-badge&logo=hackthebox&logoColor=black) HTB Starting Point — Progress Tracker
 
 | Machine | Tier | Services | Date Completed | Write-Up |
 |---------|------|----------|----------------|----------|
