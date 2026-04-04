@@ -250,13 +250,7 @@ HTB{REDACTED}
 
 ---
 
-
----
-
-## 💡 Alternative: With a Title and Key Credentials Table
-
-```markdown
-## 📊 Attack Path Summary
+### 📊 Attack Path Summary
 
 ```text
 ┌─────────────────────────────────────────────────────────────────────────┐
