@@ -5,15 +5,15 @@
 | Machine | Tier | Services | Date Completed | Write-Up |
 |---------|------|----------|----------------|----------|
 | **Archetype** | 2 | SMB (445), MSSQL (1433), WinRM (5985) | 2026-04-04 | [↓ Jump to Archetype](#htb-starting-point-archetype) |
-| **Oopsie** | 2 | HTTP (80), SSH (22) | — | — |
+| **Oopsie** | 2 | HTTP (80), SSH (22) | 2026-11-03 | [↗ oopsie.md](./oopsie.md) |
 | **Vaccine** | 2 | FTP (21), HTTP (80), SSH (22) | 2026-10-27 | [↓ Jump to Vaccine](#htb-starting-point-vaccine) |
 | **Unified** | 2 | HTTP (8080/8443), SSH (22) | — | — |
 
 ---
 
-> **Tier 2 Progress:** 2/4 machines completed (50%)  
-> **Next:** Oopsie  
-> **Last Updated:** October 27, 2026
+> **Tier 2 Progress:** 3/4 machines completed (75%)  
+> **Next:** Unified  
+> **Last Updated:** November 3, 2026
 
 ---
 
